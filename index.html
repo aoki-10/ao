@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>利用者荷物チェック管理</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/localforage/1.10.0/localforage.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/lucide/0.263.0/lucide.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        body { 
+            font-family: 'Inter', 'Hiragino Kaku Gothic ProN', sans-serif; 
+            -webkit-tap-highlight-color: transparent;
+            background-color: transparent; /* Notionの背景に合わせやすくするため */
+        }
+        .ios-shadow { box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06); }
+        input[type="checkbox"]:checked { background-color: #10b981; border-color: #10b981; }
+        
+        /* Notion埋め込み用のスクロールバー調整 */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #e5e7eb; border-radius: 10px; }
+    </style>
+</head>
+<body class="bg-gray-50 text-gray-900">
+
+<div id="app" class="max-w-full md:max-w-md mx-auto min-h-screen pb-20">
+    <!-- Header -->
+    <header class="bg-white border-b sticky top-0 z-10 p-4 flex justify-between items-center">
+        <h1 class="text-xl font-bold text-blue-600" id="page-title">荷物チェック</h1>
+        <button id="add-btn" class="bg-blue-600 text-white p-2 rounded-full hover:bg-blue-700 transition">
+            <i data-lucide="plus"></i>
+        </button>
+    </header>
+
+    <!-- Main Content Area -->
+    <main id="content" class="p-4 space-y-4">
+        <!-- Dashboard / List View -->
+        <div id="view-list" class="space-y-4">
+            <div id="user-list-container" class="space-y-3">
+                <!-- User cards will be injected here -->
+            </div>
+        </div>
+
+        <!-- Registration Form View -->
+        <div id="view-register" class="hidden space-y-4">
+            <div class="bg-white p-6 rounded-2xl ios-shadow space-y-4">
+                <h2 class="text-lg font-bold border-b pb-2">新規利用者登録</h2>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">利用者氏名</label>
+                    <input type="text" id="reg-name" class="w-full border rounded-lg p-3 outline-none focus:ring-2 focus:ring-blue-500" placeholder="例：山田 太郎">
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">顔写真</label>
+                    <div class="flex items-center gap-4">
+                        <div id="face-preview" class="w-20 h-20 bg-gray-100 rounded-full flex items-center justify-center overflow-hidden border">
+                            <i data-lucide="user" class="text-gray-400"></i>
+                        </div>
+                        <input type="file" id="input-face" accept="image/*" class="hidden">
+                        <button onclick="document.getElementById('input-face').click()" class="bg-gray-100 px-4 py-2 rounded-lg text-sm font-medium">撮影・選択</button>
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">荷物登録 (複数選択可)</label>
+                    <input type="file" id="input-luggage" accept="image/*" multiple class="hidden">
+                    <button onclick="document.getElementById('input-luggage').click()" class="w-full border-2 border-dashed border-gray-300 rounded-xl p-6 flex flex-col items-center gap-2 hover:bg-gray-50 transition text-center">
+                        <i data-lucide="camera" class="text-gray-400 mx-auto"></i>
+                        <span class="text-sm text-gray-500">写真を撮る・選ぶ</span>
+                    </button>
+                    <div id="luggage-previews" class="mt-3 grid grid-cols-2 gap-2"></div>
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">受付担当者名</label>
+                    <input type="text" id="reg-staff" class="w-full border rounded-lg p-3 outline-none focus:ring-2 focus:ring-blue-500" placeholder="スタッフ名">
+                </div>
+
+                <div class="flex flex-col gap-2 pt-4">
+                    <button id="save-user" class="w-full bg-blue-600 text-white py-3 rounded-xl font-bold">登録を完了する</button>
+                    <button id="cancel-reg" class="w-full bg-gray-200 text-gray-800 py-3 rounded-xl font-bold">キャンセル</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Detail / Checkout View -->
+        <div id="view-detail" class="hidden space-y-4">
+            <div id="detail-container"></div>
+        </div>
+    </main>
+
+    <!-- Bottom Navigation -->
+    <div class="fixed bottom-0 left-0 right-0 bg-white/80 backdrop-blur-sm border-t p-3 text-center text-[10px] text-gray-400">
+        退居済みデータは14日後に自動削除されます
+    </div>
+</div>
+
+<script>
+    const DB_KEY = "luggage_check_data";
+    let users = [];
+    let currentLuggageFiles = [];
+    let currentFaceImage = null;
+
+    const viewList = document.getElementById('view-list');
+    const viewRegister = document.getElementById('view-register');
+    const viewDetail = document.getElementById('view-detail');
+    const addBtn = document.getElementById('add-btn');
+
+    function refreshIcons() {
+        if (typeof lucide !== 'undefined') {
+            lucide.createIcons();
+        }
+    }
+
+    async function init() {
+        try {
+            const data = await localforage.getItem(DB_KEY);
+            users = data || [];
+            cleanOldData();
+            renderUserList();
+            refreshIcons();
+        } catch (err) {
+            console.error("Initialization error:", err);
+        }
+    }
+
+    async function cleanOldData() {
+        const now = Date.now();
+        const twoWeeksMs = 14 * 24 * 60 * 60 * 1000;
+        const initialCount = users.length;
+        
+        users = users.filter(user => {
+            if (user.status === 'out' && user.checkoutDate) {
+                return (now - user.checkoutDate) < twoWeeksMs;
+            }
+            return true;
+        });
+
+        if (users.length !== initialCount) {
+            await saveToDB();
+        }
+    }
+
+    async function saveToDB() {
+        await localforage.setItem(DB_KEY, users);
+        renderUserList();
+    }
+
+    function showView(viewName) {
+        viewList.classList.add('hidden');
+        viewRegister.classList.add('hidden');
+        viewDetail.classList.add('hidden');
+        addBtn.classList.remove('hidden');
+
+        if (viewName === 'list') viewList.classList.remove('hidden');
+        if (viewName === 'register') {
+            viewRegister.classList.remove('hidden');
+            addBtn.classList.add('hidden');
+        }
+        if (viewName === 'detail') {
+            viewDetail.classList.remove('hidden');
+            addBtn.classList.add('hidden');
+        }
+        refreshIcons();
+        window.scrollTo(0,0);
+    }
+
+    addBtn.onclick = () => {
+        resetForm();
+        showView('register');
+    };
+
+    document.getElementById('cancel-reg').onclick = () => showView('list');
+
+    document.getElementById('input-face').onchange = (e) => {
+        const file = e.target.files[0];
+        if (file) {
+            const reader = new FileReader();
+            reader.onload = (re) => {
+                currentFaceImage = re.target.result;
+                document.getElementById('face-preview').innerHTML = `<img src="${currentFaceImage}" class="w-full h-full object-cover">`;
+            };
+            reader.readAsDataURL(file);
+        }
+    };
+
+    document.getElementById('input-luggage').onchange = (e) => {
+        const files = Array.from(e.target.files);
+        files.forEach(file => {
+            const reader = new FileReader();
+            reader.onload = (re) => {
+                currentLuggageFiles.push({
+                    id: Date.now() + Math.random(),
+                    image: re.target.result,
+                    name: '',
+                    memo: '',
+                    checked: false
+                });
+                renderLuggagePreviews();
+            };
+            reader.readAsDataURL(file);
+        });
+    };
+
+    function renderLuggagePreviews() {
+        const container = document.getElementById('luggage-previews');
+        container.innerHTML = currentLuggageFiles.map((item, idx) => `
+            <div class="bg-gray-50 border rounded-xl p-2 space-y-2">
+                <img src="${item.image}" class="w-full h-24 object-cover rounded-lg">
+                <input type="text" placeholder="荷物名" onchange="updateTempLuggage(${idx}, 'name', this.value)" class="w-full text-xs p-1 border rounded">
+                <textarea placeholder="メモ" onchange="updateTempLuggage(${idx}, 'memo', this.value)" class="w-full text-xs p-1 border rounded h-12"></textarea>
+            </div>
+        `).join('');
+    }
+
+    window.updateTempLuggage = (idx, field, val) => {
+        currentLuggageFiles[idx][field] = val;
+    };
+
+    function resetForm() {
+        document.getElementById('reg-name').value = '';
+        document.getElementById('reg-staff').value = '';
+        currentFaceImage = null;
+        currentLuggageFiles = [];
+        document.getElementById('face-preview').innerHTML = `<i data-lucide="user" class="text-gray-400"></i>`;
+        document.getElementById('luggage-previews').innerHTML = '';
+        refreshIcons();
+    }
+
+    document.getElementById('save-user').onclick = async () => {
+        const name = document.getElementById('reg-name').value;
+        const staff = document.getElementById('reg-staff').value;
+
+        if (!name || !staff) {
+            alert('氏名と受付担当者名は必須です');
+            return;
+        }
+
+        const newUser = {
+            id: Date.now(),
+            name,
+            face: currentFaceImage,
+            staff,
+            luggage: currentLuggageFiles,
+            status: 'in', 
+            checkinDate: Date.now(),
+            checkoutDate: null,
+            checkoutStaff: ''
+        };
+
+        users.push(newUser);
+        await saveToDB();
+        showView('list');
+    };
+
+    function renderUserList() {
+        const container = document.getElementById('user-list-container');
+        if (users.length === 0) {
+            container.innerHTML = `<div class="text-center py-20 text-gray-400 text-sm">登録された利用者はまだいません</div>`;
+            return;
+        }
+
+        container.innerHTML = users.map(user => `
+            <div onclick="viewUserDetails(${user.id})" class="bg-white p-4 rounded-2xl ios-shadow flex items-center gap-4 active:scale-95 transition cursor-pointer">
+                <div class="w-14 h-14 bg-gray-100 rounded-full overflow-hidden border flex-shrink-0">
+                    ${user.face ? `<img src="${user.face}" class="w-full h-full object-cover">` : `<div class="w-full h-full flex items-center justify-center text-gray-400"><i data-lucide="user"></i></div>`}
+                </div>
+                <div class="flex-1 min-w-0">
+                    <h3 class="font-bold text-lg truncate">${user.name}</h3>
+                    <p class="text-xs text-gray-500">${user.status === 'in' ? '入居中' : '退居済み'}</p>
+                </div>
+                <div class="${user.status === 'in' ? 'bg-green-100 text-green-600' : 'bg-gray-100 text-gray-400'} text-[10px] font-bold px-2 py-1 rounded-full flex-shrink-0">
+                    ${user.status === 'in' ? '滞在' : '完了'}
+                </div>
+            </div>
+        `).join('');
+        refreshIcons();
+    }
+
+    window.viewUserDetails = (userId) => {
+        const user = users.find(u => u.id === userId);
+        if (!user) return;
+
+        const container = document.getElementById('detail-container');
+        container.innerHTML = `
+            <div class="bg-white p-5 rounded-2xl ios-shadow space-y-6">
+                <div class="flex items-center gap-4 border-b pb-4">
+                    <div class="w-16 h-16 rounded-full overflow-hidden border flex-shrink-0">
+                        <img src="${user.face || 'https://via.placeholder.com/150'}" class="w-full h-full object-cover">
+                    </div>
+                    <div class="min-w-0">
+                        <h2 class="text-xl font-bold truncate">${user.name}</h2>
+                        <p class="text-xs text-gray-500 truncate">受付担当: ${user.staff}</p>
+                    </div>
+                </div>
+
+                <div class="space-y-4">
+                    <h3 class="font-bold text-base">荷物リスト (${user.luggage.length})</h3>
+                    <div class="grid grid-cols-1 gap-3">
+                        ${user.luggage.map((item, idx) => `
+                            <div class="flex items-center gap-3 p-3 bg-gray-50 rounded-xl border">
+                                <img src="${item.image}" class="w-12 h-12 object-cover rounded-lg flex-shrink-0">
+                                <div class="flex-1 min-w-0">
+                                    <p class="font-bold text-xs truncate">${item.name || '名称なし'}</p>
+                                    <p class="text-[10px] text-gray-500 truncate">${item.memo || '-'}</p>
+                                </div>
+                                ${user.status === 'in' ? `
+                                    <input type="checkbox" ${item.checked ? 'checked' : ''} onchange="toggleLuggageCheck(${user.id}, ${idx})" class="w-5 h-5 rounded-full border-gray-300">
+                                ` : `
+                                    <div class="text-green-500"><i data-lucide="check-circle-2" class="w-5 h-5"></i></div>
+                                `}
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+
+                ${user.status === 'in' ? `
+                    <div class="border-t pt-4 space-y-4">
+                        <div>
+                            <label class="block text-xs font-medium text-gray-700 mb-1">退居確認スタッフ</label>
+                            <input type="text" id="checkout-staff" class="w-full border rounded-lg p-3 text-sm outline-none focus:ring-2 focus:ring-green-500" placeholder="スタッフ名">
+                        </div>
+                        <button onclick="processCheckout(${user.id})" class="w-full bg-green-600 text-white py-3 rounded-xl font-bold text-sm shadow-md">退居処理を完了する</button>
+                    </div>
+                ` : `
+                    <div class="bg-blue-50 p-4 rounded-xl text-[11px]">
+                        <p class="font-bold text-blue-800">退居処理完了済み</p>
+                        <p class="text-blue-600">確認者: ${user.checkoutStaff}</p>
+                        <p class="text-blue-600">日時: ${new Date(user.checkoutDate).toLocaleString()}</p>
+                    </div>
+                `}
+
+                <button onclick="showView('list')" class="w-full bg-gray-100 text-gray-600 py-3 rounded-xl font-bold text-sm">戻る</button>
+            </div>
+        `;
+        showView('detail');
+        refreshIcons();
+    };
+
+    window.toggleLuggageCheck = (userId, lugIdx) => {
+        const user = users.find(u => u.id === userId);
+        if (user) {
+            user.luggage[lugIdx].checked = !user.luggage[lugIdx].checked;
+            saveToDB();
+        }
+    };
+
+    window.processCheckout = async (userId) => {
+        const user = users.find(u => u.id === userId);
+        const checkoutStaff = document.getElementById('checkout-staff').value;
+
+        if (!checkoutStaff) {
+            alert('確認者の名前を入力してください');
+            return;
+        }
+
+        const unchecked = user.luggage.filter(l => !l.checked);
+        if (unchecked.length > 0) {
+            if (!confirm(`チェックされていない荷物があります。続行しますか？`)) {
+                return;
+            }
+        }
+
+        user.status = 'out';
+        user.checkoutStaff = checkoutStaff;
+        user.checkoutDate = Date.now();
+
+        await saveToDB();
+        showView('list');
+    };
+
+    document.addEventListener('DOMContentLoaded', init);
+</script>
+
+</body>
+</html>
